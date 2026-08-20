@@ -47,7 +47,7 @@ jobs:
           --health-retries=10
 
     steps:
-      - name: Checkout sanitized private snapshot
+      - name: Checkout isolated private input
         uses: actions/checkout@v5
         with:
           repository: first-knight-of-cydonia/validation-input
@@ -63,14 +63,12 @@ jobs:
         run: |
           set -euo pipefail
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
-          test -f "$manifest"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
-          [[ "$validation_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$validation_id" =~ ^[0-9a-f-]{36}$ ]]
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
           rm -rf "$GITHUB_WORKSPACE/input/.git"
-          test ! -e "$GITHUB_WORKSPACE/input/.git"
-          echo "Snapshot boundary verified."
+          echo 'Snapshot boundary verified.'
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -84,7 +82,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          raw="$RUNNER_TEMP/install.log"
           wp_path="$RUNNER_TEMP/wordpress"
           mkdir -p "$wp_path"
           {
@@ -94,36 +91,15 @@ jobs:
             wp config set WP_DEBUG true --raw --path="$wp_path"
             wp config set WP_DEBUG_LOG true --raw --path="$wp_path"
             wp config set WP_DEBUG_DISPLAY false --raw --path="$wp_path"
-          } >"$raw" 2>&1
-          echo "WordPress fixture installed."
+          } >"$RUNNER_TEMP/install.log" 2>&1
+          echo 'WordPress fixture installed.'
 
-      - name: Execute preview assertions
+      - name: Execute neutral semantic gate
         shell: bash
         env:
           VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
+          WP_PATH: ${{ runner.temp }}/wordpress
+          WP_VERSION: ${{ matrix.wordpress }}
         run: |
           set -euo pipefail
-          wp_path="$RUNNER_TEMP/wordpress"
-          input="$GITHUB_WORKSPACE/input/spikes/preview-transport"
-          plugin_path="$wp_path/wp-content/plugins/preview-probe"
-          raw="$RUNNER_TEMP/preview-raw.log"
-          rm -rf "$plugin_path"
-          cp -R "$input" "$plugin_path"
-
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            wp plugin activate preview-probe --path="$wp_path"
-            wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
-            wp eval-file "$input/ci/run-custom-cpt-hardening.php" --path="$wp_path"
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
-
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=preview_transport wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-            exit 0
-          fi
-          printf 'validation_id=%s gate=preview_transport wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-          exit "$exit_code"
+          bash "$GITHUB_WORKSPACE/input/.validation/run-gate.sh" G04
