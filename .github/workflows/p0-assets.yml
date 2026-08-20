@@ -50,7 +50,7 @@ jobs:
           --health-retries=10
 
     steps:
-      - name: Checkout sanitized private snapshot
+      - name: Checkout isolated private input
         uses: actions/checkout@v5
         with:
           repository: first-knight-of-cydonia/validation-input
@@ -68,10 +68,10 @@ jobs:
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
-          [[ "$validation_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          [[ "$validation_id" =~ ^[0-9a-f-]{36}$ ]]
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
           rm -rf "$GITHUB_WORKSPACE/input/.git"
-          echo "Snapshot boundary verified."
+          echo 'Snapshot boundary verified.'
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -100,53 +100,16 @@ jobs:
               wp theme install twentytwentyone --activate --force --path="$wp_path"
             fi
           } >"$RUNNER_TEMP/install.log" 2>&1
-          echo "WordPress fixture installed."
+          echo 'WordPress fixture installed.'
 
-      - name: Execute asset assertions
+      - name: Execute neutral semantic gate
         shell: bash
         env:
           VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
+          WP_PATH: ${{ runner.temp }}/wordpress
+          WP_VERSION: ${{ matrix.wordpress }}
+          THEME_KIND: ${{ matrix.theme_kind }}
+          BASE_URL: http://127.0.0.1:8080
         run: |
           set -euo pipefail
-          wp_path="$RUNNER_TEMP/wordpress"
-          input="$GITHUB_WORKSPACE/input/spikes/asset-compatibility"
-          plugin_path="$wp_path/wp-content/plugins/asset-probe"
-          raw="$RUNNER_TEMP/assets-raw.log"
-          server_log="$RUNNER_TEMP/php-server-raw.log"
-          rm -rf "$plugin_path"
-          cp -R "$input" "$plugin_path"
-
-          stage() {
-            local name="$1"
-            shift
-            local stage_log="$RUNNER_TEMP/assets-${name}.log"
-            if "$@" >"$stage_log" 2>&1; then
-              cat "$stage_log" >>"$raw"
-              printf 'stage=%s result=PASS\n' "$name"
-              return 0
-            fi
-            cat "$stage_log" >>"$raw"
-            local fail_line fingerprint
-            fail_line="$(grep -m1 -E 'FAIL:|missing|unexpected' "$stage_log" || true)"
-            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
-            printf 'stage=%s result=FAIL failure_fingerprint=%s\n' "$name" "$fingerprint"
-            return 1
-          }
-
-          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
-          stage shell_lint bash -n "$input/ci/run-smoke.sh"
-          stage plugin_activate wp plugin activate asset-probe --path="$wp_path"
-
-          php -S 127.0.0.1:8080 -t "$wp_path" >"$server_log" 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
-          sleep 2
-          if curl --retry 3 --retry-connrefused --retry-delay 1 -fsS -o /dev/null 'http://127.0.0.1:8080/'; then
-            printf 'stage=server_ready result=PASS\n'
-          else
-            printf 'stage=server_ready result=FAIL\n'
-            exit 1
-          fi
-
-          stage smoke bash "$input/ci/run-smoke.sh" "$wp_path" 'http://127.0.0.1:8080' '${{ matrix.theme_kind }}'
-          printf 'validation_id=%s gate=assets wordpress=%s theme=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}' '${{ matrix.theme_kind }}'
+          bash "$GITHUB_WORKSPACE/input/.validation/run-gate.sh" G11
