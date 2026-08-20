@@ -118,27 +118,48 @@ jobs:
           cp -R "$input" "$plugin_path"
           rm -rf "$plugin_path/node_modules"
 
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            wp plugin activate focus-probe --path="$wp_path"
-            wp eval-file "$input/ci/read-identity-integrity.php" --path="$wp_path"
-            fixtures="$(wp option get cgt_focus_spike_fixtures --format=json --path="$wp_path")"
-            wp server --host=127.0.0.1 --port=8080 --path="$wp_path" >"$server_log" 2>&1 &
-            server_pid=$!
-            trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
-            sleep 3
-            CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/e2e.js"
-            CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/multi-ref-e2e.js"
-            CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/race-e2e.js"
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
+          stage() {
+            local name="$1"
+            shift
+            local stage_log="$RUNNER_TEMP/focus-${name}.log"
+            if "$@" >"$stage_log" 2>&1; then
+              cat "$stage_log" >>"$raw"
+              printf 'stage=%s result=PASS\n' "$name"
+              return 0
+            fi
+            cat "$stage_log" >>"$raw"
+            local fail_line fingerprint
+            fail_line="$(grep -m1 -E 'FAIL:|Error:' "$stage_log" || true)"
+            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
+            printf 'stage=%s result=FAIL failure_fingerprint=%s\n' "$name" "$fingerprint"
+            return 1
+          }
 
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=focus_refetch wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-            exit 0
+          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
+          stage plugin_activate wp plugin activate focus-probe --path="$wp_path"
+          stage identity_integrity wp eval-file "$input/ci/read-identity-integrity.php" --path="$wp_path"
+
+          fixtures="$(wp option get cgt_focus_spike_fixtures --format=json --path="$wp_path" 2>>"$raw")"
+          if [[ -n "$fixtures" ]] && jq -e . >/dev/null 2>&1 <<<"$fixtures"; then
+            printf 'stage=fixture_read result=PASS\n'
+          else
+            printf 'stage=fixture_read result=FAIL\n'
+            exit 1
           fi
-          printf 'validation_id=%s gate=focus_refetch wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-          exit "$exit_code"
+
+          wp server --host=127.0.0.1 --port=8080 --path="$wp_path" >"$server_log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          sleep 3
+          if curl --retry 3 --retry-connrefused --retry-delay 1 -fsS -o /dev/null 'http://127.0.0.1:8080/'; then
+            printf 'stage=server_ready result=PASS\n'
+          else
+            printf 'stage=server_ready result=FAIL\n'
+            exit 1
+          fi
+
+          stage basic_refetch env CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/e2e.js"
+          stage multi_reference env CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/multi-ref-e2e.js"
+          stage race_control env CGT_FOCUS_BASE_URL='http://127.0.0.1:8080' CGT_FOCUS_FIXTURES="$fixtures" node "$input/ci/race-e2e.js"
+
+          printf 'validation_id=%s gate=focus_refetch wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
