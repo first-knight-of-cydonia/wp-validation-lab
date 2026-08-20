@@ -106,4 +106,4 @@ jobs:
           BASE_URL: http://127.0.0.1:8080
         run: |
           set -euo pipefail
-          bash "$GITHUB_WORKSPACE/input/.validation/run-focus.sh"
+          bash "$GITHUB_WORKSPACE/input/.validation/run-focus-candidate.sh"
