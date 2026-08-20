@@ -1,0 +1,142 @@
+name: P0 Capability Lifecycle
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p0-capability-lifecycle.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p0-capability-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semantic:
+    name: WP ${{ matrix.wordpress }} / PHP 8.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    strategy:
+      fail-fast: false
+      matrix:
+        wordpress:
+          - '6.7.2'
+          - '7.0.4'
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: wordpress
+          MYSQL_USER: wordpress
+          MYSQL_PASSWORD: wordpress
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout sanitized private snapshot
+        uses: actions/checkout@v5
+        with:
+          repository: first-knight-of-cydonia/validation-input
+          ref: snapshot-current
+          token: ${{ secrets.VALIDATION_INPUT_TOKEN }}
+          path: input
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify snapshot boundary
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
+          validation_id="$(jq -er '.validation_id' "$manifest")"
+          [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
+          [[ "$validation_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+          printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
+          rm -rf "$GITHUB_WORKSPACE/input/.git"
+          echo "Snapshot boundary verified."
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          extensions: mysqli, ctype
+          tools: wp-cli
+          coverage: none
+
+      - name: Install isolated WordPress fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          mkdir -p "$wp_path"
+          {
+            wp core download --version='${{ matrix.wordpress }}' --path="$wp_path" --force
+            wp config create --path="$wp_path" --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=127.0.0.1:3306 --skip-check
+            wp core install --path="$wp_path" --url='http://capability.example.test' --title='Validation Fixture' --admin_user=admin --admin_password=admin --admin_email='admin@example.test' --skip-email
+            wp config set WP_DEBUG true --raw --path="$wp_path"
+            wp config set WP_DEBUG_LOG true --raw --path="$wp_path"
+            wp config set WP_DEBUG_DISPLAY false --raw --path="$wp_path"
+          } >"$RUNNER_TEMP/install.log" 2>&1
+          echo "WordPress fixture installed."
+
+      - name: Execute lifecycle assertions
+        shell: bash
+        env:
+          VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          input="$GITHUB_WORKSPACE/input/spikes/capability-lifecycle"
+          plugin_path="$wp_path/wp-content/plugins/capability-probe"
+          raw="$RUNNER_TEMP/capability-raw.log"
+          rm -rf "$plugin_path"
+          cp -R "$input" "$plugin_path"
+
+          set +e
+          (
+            set -euo pipefail
+            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
+            wp plugin activate capability-probe --path="$wp_path"
+            wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
+            wp eval-file "$input/ci/verify-future-schema.php" --path="$wp_path"
+
+            wp plugin deactivate capability-probe --path="$wp_path"
+            wp eval-file "$input/ci/verify-deactivated.php" --path="$wp_path"
+
+            wp plugin activate capability-probe --path="$wp_path"
+            wp eval-file "$input/ci/verify-reinstall.php" --path="$wp_path"
+
+            wp plugin deactivate capability-probe --path="$wp_path"
+            wp core multisite-convert --path="$wp_path" --title='Validation Network'
+            site2="$(wp site create --path="$wp_path" --slug=existing-site --title='Existing Site' --email='admin@example.test' --porcelain)"
+            wp plugin activate capability-probe --path="$wp_path"
+            site3="$(wp site create --path="$wp_path" --slug=isolated-site --title='Isolated Site' --email='admin@example.test' --porcelain)"
+            CGT_CAP_PHASE=pre CGT_CAP_ISOLATION_SITE_ID="$site3" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
+            wp plugin deactivate capability-probe --path="$wp_path"
+            wp plugin activate capability-probe --network --path="$wp_path"
+            site4="$(wp site create --path="$wp_path" --slug=network-new-site --title='Network New Site' --email='admin@example.test' --porcelain)"
+            CGT_CAP_PHASE=network CGT_CAP_NEW_SITE_ID="$site4" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
+            test -n "$site2"
+          ) >"$raw" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ "$exit_code" -eq 0 ]]; then
+            printf 'validation_id=%s gate=capability_lifecycle wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
+            exit 0
+          fi
+          printf 'validation_id=%s gate=capability_lifecycle wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
+          exit "$exit_code"
