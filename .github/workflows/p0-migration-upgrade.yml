@@ -108,11 +108,18 @@ jobs:
           stage() {
             local name="$1"
             shift
-            if "$@" >>"$raw" 2>&1; then
+            local stage_log="$RUNNER_TEMP/migration-${name}.log"
+            if "$@" >"$stage_log" 2>&1; then
+              cat "$stage_log" >>"$raw"
               printf 'stage=%s result=PASS\n' "$name"
               return 0
             fi
-            printf 'stage=%s result=FAIL\n' "$name"
+            cat "$stage_log" >>"$raw"
+            local pass_count fail_line fingerprint
+            pass_count="$(grep -c '^PASS:' "$stage_log" || true)"
+            fail_line="$(grep -m1 '^FAIL:' "$stage_log" || true)"
+            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
+            printf 'stage=%s result=FAIL pass_count=%s failure_fingerprint=%s\n' "$name" "$pass_count" "$fingerprint"
             return 1
           }
 
@@ -143,5 +150,4 @@ jobs:
           fi
 
           stage multisite_assertions wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
-
           printf 'validation_id=%s gate=migration_upgrade wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
