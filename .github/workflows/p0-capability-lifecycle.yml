@@ -105,38 +105,61 @@ jobs:
           rm -rf "$plugin_path"
           cp -R "$input" "$plugin_path"
 
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            wp plugin activate capability-probe --path="$wp_path"
-            wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
-            wp eval-file "$input/ci/verify-future-schema.php" --path="$wp_path"
+          stage() {
+            local name="$1"
+            shift
+            local stage_log="$RUNNER_TEMP/capability-${name}.log"
+            if "$@" >"$stage_log" 2>&1; then
+              cat "$stage_log" >>"$raw"
+              printf 'stage=%s result=PASS\n' "$name"
+              return 0
+            fi
+            cat "$stage_log" >>"$raw"
+            local pass_count fail_line fingerprint
+            pass_count="$(grep -c '^PASS:' "$stage_log" || true)"
+            fail_line="$(grep -m1 '^FAIL:' "$stage_log" || true)"
+            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
+            printf 'stage=%s result=FAIL pass_count=%s failure_fingerprint=%s\n' "$name" "$pass_count" "$fingerprint"
+            return 1
+          }
 
-            wp plugin deactivate capability-probe --path="$wp_path"
-            wp eval-file "$input/ci/verify-deactivated.php" --path="$wp_path"
+          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
+          stage activate_initial wp plugin activate capability-probe --path="$wp_path"
+          stage single_site wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
+          stage future_schema wp eval-file "$input/ci/verify-future-schema.php" --path="$wp_path"
+          stage deactivate_initial wp plugin deactivate capability-probe --path="$wp_path"
+          stage verify_deactivated wp eval-file "$input/ci/verify-deactivated.php" --path="$wp_path"
+          stage reactivate wp plugin activate capability-probe --path="$wp_path"
+          stage verify_reinstall wp eval-file "$input/ci/verify-reinstall.php" --path="$wp_path"
+          stage deactivate_before_multisite wp plugin deactivate capability-probe --path="$wp_path"
+          stage multisite_convert wp core multisite-convert --path="$wp_path" --title='Validation Network'
 
-            wp plugin activate capability-probe --path="$wp_path"
-            wp eval-file "$input/ci/verify-reinstall.php" --path="$wp_path"
-
-            wp plugin deactivate capability-probe --path="$wp_path"
-            wp core multisite-convert --path="$wp_path" --title='Validation Network'
-            site2="$(wp site create --path="$wp_path" --slug=existing-site --title='Existing Site' --email='admin@example.test' --porcelain)"
-            wp plugin activate capability-probe --path="$wp_path"
-            site3="$(wp site create --path="$wp_path" --slug=isolated-site --title='Isolated Site' --email='admin@example.test' --porcelain)"
-            CGT_CAP_PHASE=pre CGT_CAP_ISOLATION_SITE_ID="$site3" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
-            wp plugin deactivate capability-probe --path="$wp_path"
-            wp plugin activate capability-probe --network --path="$wp_path"
-            site4="$(wp site create --path="$wp_path" --slug=network-new-site --title='Network New Site' --email='admin@example.test' --porcelain)"
-            CGT_CAP_PHASE=network CGT_CAP_NEW_SITE_ID="$site4" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
-            test -n "$site2"
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
-
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=capability_lifecycle wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-            exit 0
+          if site2="$(wp site create --path="$wp_path" --slug=existing-site --title='Existing Site' --email='admin@example.test' --porcelain 2>>"$raw")" && [[ -n "$site2" ]]; then
+            printf 'stage=create_existing_site result=PASS\n'
+          else
+            printf 'stage=create_existing_site result=FAIL\n'
+            exit 1
           fi
-          printf 'validation_id=%s gate=capability_lifecycle wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-          exit "$exit_code"
+
+          stage activate_site_local wp plugin activate capability-probe --path="$wp_path"
+
+          if site3="$(wp site create --path="$wp_path" --slug=isolated-site --title='Isolated Site' --email='admin@example.test' --porcelain 2>>"$raw")" && [[ -n "$site3" ]]; then
+            printf 'stage=create_isolated_site result=PASS\n'
+          else
+            printf 'stage=create_isolated_site result=FAIL\n'
+            exit 1
+          fi
+
+          stage multisite_pre env CGT_CAP_PHASE=pre CGT_CAP_ISOLATION_SITE_ID="$site3" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
+          stage deactivate_site_local wp plugin deactivate capability-probe --path="$wp_path"
+          stage activate_network wp plugin activate capability-probe --network --path="$wp_path"
+
+          if site4="$(wp site create --path="$wp_path" --slug=network-new-site --title='Network New Site' --email='admin@example.test' --porcelain 2>>"$raw")" && [[ -n "$site4" ]]; then
+            printf 'stage=create_network_site result=PASS\n'
+          else
+            printf 'stage=create_network_site result=FAIL\n'
+            exit 1
+          fi
+
+          stage multisite_network env CGT_CAP_PHASE=network CGT_CAP_NEW_SITE_ID="$site4" wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
+          printf 'validation_id=%s gate=capability_lifecycle wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
