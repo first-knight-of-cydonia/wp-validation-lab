@@ -100,4 +100,4 @@ jobs:
           WP_VERSION: ${{ matrix.wordpress }}
         run: |
           set -euo pipefail
-          bash "$GITHUB_WORKSPACE/input/.validation/run-gate.sh" G07
+          bash "$GITHUB_WORKSPACE/input/.validation/run-migration.sh"
