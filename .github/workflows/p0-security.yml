@@ -63,14 +63,11 @@ jobs:
         run: |
           set -euo pipefail
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
-          test -f "$manifest"
           validation_id="$(jq -er '.validation_id' "$manifest")"
-          schema_version="$(jq -er '.schema_version' "$manifest")"
-          [[ "$schema_version" == '1' ]]
+          [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
           [[ "$validation_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
           rm -rf "$GITHUB_WORKSPACE/input/.git"
-          test ! -e "$GITHUB_WORKSPACE/input/.git"
           echo "Snapshot boundary verified."
 
       - name: Setup PHP
@@ -85,7 +82,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          raw="$RUNNER_TEMP/install.log"
           wp_path="$RUNNER_TEMP/wordpress"
           mkdir -p "$wp_path"
           {
@@ -95,7 +91,7 @@ jobs:
             wp config set WP_DEBUG true --raw --path="$wp_path"
             wp config set WP_DEBUG_LOG true --raw --path="$wp_path"
             wp config set WP_DEBUG_DISPLAY false --raw --path="$wp_path"
-          } >"$raw" 2>&1
+          } >"$RUNNER_TEMP/install.log" 2>&1
           echo "WordPress fixture installed."
 
       - name: Execute security assertions
@@ -111,32 +107,34 @@ jobs:
           rm -rf "$plugin_path"
           cp -R "$input" "$plugin_path"
 
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            wp plugin activate security-probe --path="$wp_path"
-            for test_file in \
-              run-tests.php \
-              run-autosave-tests.php \
-              run-nonrest-tests.php \
-              run-persistence-fallback-tests.php \
-              run-synced-pattern-security-tests.php \
-              run-native-carrier-security-tests.php \
-              run-preview-carrier-security-tests.php \
-              run-preview-context-authorization-tests.php \
-              run-analysis-budget-security-tests.php
-            do
-              wp eval-file "$input/ci/$test_file" --path="$wp_path"
-            done
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
+          stage() {
+            local name="$1"
+            shift
+            local stage_log="$RUNNER_TEMP/security-${name}.log"
+            if "$@" >"$stage_log" 2>&1; then
+              cat "$stage_log" >>"$raw"
+              printf 'stage=%s result=PASS\n' "$name"
+              return 0
+            fi
+            cat "$stage_log" >>"$raw"
+            local pass_count fail_line fingerprint
+            pass_count="$(grep -c '^PASS:' "$stage_log" || true)"
+            fail_line="$(grep -m1 '^FAIL:' "$stage_log" || true)"
+            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
+            printf 'stage=%s result=FAIL pass_count=%s failure_fingerprint=%s\n' "$name" "$pass_count" "$fingerprint"
+            return 1
+          }
 
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=security_matrix wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-            exit 0
-          fi
+          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
+          stage plugin_activate wp plugin activate security-probe --path="$wp_path"
+          stage rest_core wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
+          stage autosave wp eval-file "$input/ci/run-autosave-tests.php" --path="$wp_path"
+          stage nonrest wp eval-file "$input/ci/run-nonrest-tests.php" --path="$wp_path"
+          stage persistence wp eval-file "$input/ci/run-persistence-fallback-tests.php" --path="$wp_path"
+          stage synced_pattern wp eval-file "$input/ci/run-synced-pattern-security-tests.php" --path="$wp_path"
+          stage native_carrier wp eval-file "$input/ci/run-native-carrier-security-tests.php" --path="$wp_path"
+          stage preview_carrier wp eval-file "$input/ci/run-preview-carrier-security-tests.php" --path="$wp_path"
+          stage preview_context wp eval-file "$input/ci/run-preview-context-authorization-tests.php" --path="$wp_path"
+          stage analysis_budget wp eval-file "$input/ci/run-analysis-budget-security-tests.php" --path="$wp_path"
 
-          printf 'validation_id=%s gate=security_matrix wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-          exit "$exit_code"
+          printf 'validation_id=%s gate=security_matrix wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
