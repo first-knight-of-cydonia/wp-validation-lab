@@ -29,7 +29,6 @@ jobs:
           - '6.8.7'
           - '6.9.7'
           - '7.0.4'
-        include: []
         theme_kind:
           - block
           - classic
@@ -67,13 +66,11 @@ jobs:
         run: |
           set -euo pipefail
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
-          test -f "$manifest"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
           [[ "$validation_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
           rm -rf "$GITHUB_WORKSPACE/input/.git"
-          test ! -e "$GITHUB_WORKSPACE/input/.git"
           echo "Snapshot boundary verified."
 
       - name: Setup PHP
@@ -88,7 +85,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          raw="$RUNNER_TEMP/install.log"
           wp_path="$RUNNER_TEMP/wordpress"
           mkdir -p "$wp_path"
           {
@@ -103,7 +99,7 @@ jobs:
             else
               wp theme install twentytwentyone --activate --force --path="$wp_path"
             fi
-          } >"$raw" 2>&1
+          } >"$RUNNER_TEMP/install.log" 2>&1
           echo "WordPress fixture installed."
 
       - name: Execute asset assertions
@@ -120,24 +116,37 @@ jobs:
           rm -rf "$plugin_path"
           cp -R "$input" "$plugin_path"
 
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            bash -n "$input/ci/run-smoke.sh"
-            wp plugin activate asset-probe --path="$wp_path"
-            php -S 127.0.0.1:8080 -t "$wp_path" >"$server_log" 2>&1 &
-            server_pid=$!
-            trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
-            sleep 2
-            bash "$input/ci/run-smoke.sh" "$wp_path" 'http://127.0.0.1:8080' '${{ matrix.theme_kind }}'
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
+          stage() {
+            local name="$1"
+            shift
+            local stage_log="$RUNNER_TEMP/assets-${name}.log"
+            if "$@" >"$stage_log" 2>&1; then
+              cat "$stage_log" >>"$raw"
+              printf 'stage=%s result=PASS\n' "$name"
+              return 0
+            fi
+            cat "$stage_log" >>"$raw"
+            local fail_line fingerprint
+            fail_line="$(grep -m1 -E 'FAIL:|missing|unexpected' "$stage_log" || true)"
+            fingerprint="$(printf '%s' "$fail_line" | sha256sum | cut -d' ' -f1)"
+            printf 'stage=%s result=FAIL failure_fingerprint=%s\n' "$name" "$fingerprint"
+            return 1
+          }
 
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=assets wordpress=%s theme=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}' '${{ matrix.theme_kind }}'
-            exit 0
+          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
+          stage shell_lint bash -n "$input/ci/run-smoke.sh"
+          stage plugin_activate wp plugin activate asset-probe --path="$wp_path"
+
+          php -S 127.0.0.1:8080 -t "$wp_path" >"$server_log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          sleep 2
+          if curl --retry 3 --retry-connrefused --retry-delay 1 -fsS -o /dev/null 'http://127.0.0.1:8080/'; then
+            printf 'stage=server_ready result=PASS\n'
+          else
+            printf 'stage=server_ready result=FAIL\n'
+            exit 1
           fi
-          printf 'validation_id=%s gate=assets wordpress=%s theme=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}' '${{ matrix.theme_kind }}'
-          exit "$exit_code"
+
+          stage smoke bash "$input/ci/run-smoke.sh" "$wp_path" 'http://127.0.0.1:8080' '${{ matrix.theme_kind }}'
+          printf 'validation_id=%s gate=assets wordpress=%s theme=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}' '${{ matrix.theme_kind }}'
