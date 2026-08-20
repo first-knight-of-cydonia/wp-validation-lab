@@ -105,33 +105,43 @@ jobs:
           rm -rf "$plugin_path"
           cp -R "$input" "$plugin_path"
 
-          set +e
-          (
-            set -euo pipefail
-            find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
-            wp plugin activate cgt-migration-upgrade-spike --path="$wp_path"
+          stage() {
+            local name="$1"
+            shift
+            if "$@" >>"$raw" 2>&1; then
+              printf 'stage=%s result=PASS\n' "$name"
+              return 0
+            fi
+            printf 'stage=%s result=FAIL\n' "$name"
+            return 1
+          }
 
-            wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
-            wp eval-file "$input/ci/run-integrity-hardening.php" --path="$wp_path"
-            wp eval-file "$input/ci/run-foreign-identity.php" --path="$wp_path"
-            wp eval-file "$input/ci/run-post-backed-reference-evidence.php" --path="$wp_path"
-            wp eval-file "$input/ci/create-pre-multisite-fixture.php" --path="$wp_path"
+          stage php_lint bash -c 'find "$1" -type f -name "*.php" -print0 | xargs -0 -n1 php -l' _ "$plugin_path"
+          stage plugin_activate wp plugin activate cgt-migration-upgrade-spike --path="$wp_path"
+          stage base_migration wp eval-file "$input/ci/run-tests.php" --path="$wp_path"
+          stage integrity_hardening wp eval-file "$input/ci/run-integrity-hardening.php" --path="$wp_path"
+          stage foreign_identity wp eval-file "$input/ci/run-foreign-identity.php" --path="$wp_path"
+          stage post_backed_evidence wp eval-file "$input/ci/run-post-backed-reference-evidence.php" --path="$wp_path"
+          stage pre_multisite_fixture wp eval-file "$input/ci/create-pre-multisite-fixture.php" --path="$wp_path"
+          stage plugin_deactivate wp plugin deactivate cgt-migration-upgrade-spike --path="$wp_path"
+          stage multisite_convert wp core multisite-convert --path="$wp_path" --title='Validation Network'
 
-            wp plugin deactivate cgt-migration-upgrade-spike --path="$wp_path"
-            wp core multisite-convert --path="$wp_path" --title='Validation Network'
-            pre_site="$(wp site create --path="$wp_path" --slug=pre-activation --title='Pre Activation Site' --email='admin@example.test' --porcelain)"
-            test -n "$pre_site"
-            wp plugin activate cgt-migration-upgrade-spike --network --path="$wp_path"
-            post_site="$(wp site create --path="$wp_path" --slug=post-activation --title='Post Activation Site' --email='admin@example.test' --porcelain)"
-            test -n "$post_site"
-            wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
-          ) >"$raw" 2>&1
-          exit_code=$?
-          set -e
-
-          if [[ "$exit_code" -eq 0 ]]; then
-            printf 'validation_id=%s gate=migration_upgrade wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-            exit 0
+          if pre_site="$(wp site create --path="$wp_path" --slug=pre-activation --title='Pre Activation Site' --email='admin@example.test' --porcelain 2>>"$raw")" && [[ -n "$pre_site" ]]; then
+            printf 'stage=pre_activation_site result=PASS\n'
+          else
+            printf 'stage=pre_activation_site result=FAIL\n'
+            exit 1
           fi
-          printf 'validation_id=%s gate=migration_upgrade wordpress=%s result=FAIL\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
-          exit "$exit_code"
+
+          stage network_activate wp plugin activate cgt-migration-upgrade-spike --network --path="$wp_path"
+
+          if post_site="$(wp site create --path="$wp_path" --slug=post-activation --title='Post Activation Site' --email='admin@example.test' --porcelain 2>>"$raw")" && [[ -n "$post_site" ]]; then
+            printf 'stage=post_activation_site result=PASS\n'
+          else
+            printf 'stage=post_activation_site result=FAIL\n'
+            exit 1
+          fi
+
+          stage multisite_assertions wp eval-file "$input/ci/run-multisite.php" --path="$wp_path"
+
+          printf 'validation_id=%s gate=migration_upgrade wordpress=%s result=PASS\n' "$VALIDATION_ID" '${{ matrix.wordpress }}'
