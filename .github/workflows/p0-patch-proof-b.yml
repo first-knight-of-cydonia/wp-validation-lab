@@ -1,0 +1,105 @@
+name: P0 Patch Proof B
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/p0-patch-proof-b.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p0-patch-proof-b-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    name: WP ${{ matrix.wordpress }} / PHP 8.0 / Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        wordpress:
+          - '6.7.2'
+          - '7.0.4'
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: wordpress
+          MYSQL_USER: wordpress
+          MYSQL_PASSWORD: wordpress
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout isolated private input
+        uses: actions/checkout@v5
+        with:
+          repository: first-knight-of-cydonia/validation-input
+          ref: snapshot-current
+          token: ${{ secrets.VALIDATION_INPUT_TOKEN }}
+          path: input
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify snapshot boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
+          [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
+          validation_id="$(jq -er '.validation_id' "$manifest")"
+          [[ "$validation_id" =~ ^[0-9a-f-]{36}$ ]]
+          rm -rf "$GITHUB_WORKSPACE/input/.git"
+          echo 'Snapshot boundary verified.'
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          extensions: mysqli, ctype
+          tools: wp-cli
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated WordPress fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          mkdir -p "$wp_path"
+          {
+            wp core download --version='${{ matrix.wordpress }}' --path="$wp_path" --force
+            wp config create --path="$wp_path" --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=127.0.0.1:3306 --skip-check
+            wp core install --path="$wp_path" --url='http://127.0.0.1:8080' --title='Validation Fixture' --admin_user=admin --admin_password=admin --admin_email='admin@example.test' --skip-email
+            cd "$RUNNER_TEMP"
+            npm init -y
+            npm install playwright@1.55.0
+            npx playwright install --with-deps chromium
+          } >"$RUNNER_TEMP/install.log" 2>&1
+          echo 'WordPress/browser fixture installed.'
+
+      - name: Execute neutral patch proof
+        shell: bash
+        env:
+          WP_PATH: ${{ runner.temp }}/wordpress
+          BASE_URL: http://127.0.0.1:8080
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/input/.validation/run-focus-overlay.sh"
