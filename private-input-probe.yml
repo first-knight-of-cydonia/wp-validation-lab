@@ -1,0 +1,40 @@
+name: Private Input Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify private input access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.VALIDATION_INPUT_TOKEN }}
+
+        run: |
+          set -euo pipefail
+
+          test -n "$TOKEN"
+
+          status=$(curl \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/first-knight-of-cydonia/validation-input)
+
+          if [ "$status" != "200" ]; then
+            echo "Private input access check failed (HTTP $status)."
+            exit 1
+          fi
+
+          echo "Private input access confirmed."
