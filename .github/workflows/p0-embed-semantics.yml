@@ -130,18 +130,16 @@ jobs:
           cp -R "$input" "$plugin_path"
 
           set +e
-          {
+          (
+            set -euo pipefail
             find "$plugin_path" -type f -name '*.php' -print0 | xargs -0 -n1 php -l
             wp plugin activate semantic-probe --path="$wp_path"
             php -S 127.0.0.1:8080 -t "$wp_path" >"$server_log" 2>&1 &
             server_pid=$!
+            trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
             sleep 2
             bash "$input/ci/run-smoke.sh" "$wp_path" 'http://127.0.0.1:8080'
-            result=$?
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-            exit "$result"
-          } >"$raw" 2>&1
+          ) >"$raw" 2>&1
           exit_code=$?
           set -e
 
