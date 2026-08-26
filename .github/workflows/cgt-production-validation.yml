@@ -17,9 +17,16 @@ concurrency:
 
 jobs:
   production:
-    name: WordPress 6.7.2 / PHP 8.0 / Chromium
+    name: WordPress ${{ matrix.wordpress }} / PHP 8.0 / Chromium
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        wordpress:
+          - '6.7.2'
+          - '7.0.3'
 
     services:
       mysql:
@@ -110,21 +117,21 @@ jobs:
           summary="$(tail -n 1 "$RUNNER_TEMP/production-gate.log" | tr -d '\r')"
           echo "stage=production-gate result=PASS ${summary}"
 
-      - name: Install WordPress 6.7.2 fixture
+      - name: Install WordPress ${{ matrix.wordpress }} fixture
         shell: bash
         run: |
           set -euo pipefail
           wp_path="$RUNNER_TEMP/wordpress"
           mkdir -p "$wp_path"
           {
-            wp core download --version='6.7.2' --path="$wp_path" --force
+            wp core download --version='${{ matrix.wordpress }}' --path="$wp_path" --force
             wp config create --path="$wp_path" --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=127.0.0.1:3306 --skip-check
             wp core install --path="$wp_path" --url='http://127.0.0.1:8080' --title='Validation Fixture' --admin_user=admin --admin_password=admin --admin_email='admin@example.test' --skip-email
             wp config set WP_DEBUG true --raw --path="$wp_path"
             wp config set WP_DEBUG_LOG true --raw --path="$wp_path"
             wp config set WP_DEBUG_DISPLAY false --raw --path="$wp_path"
           } >"$RUNNER_TEMP/wp-install.log" 2>&1
-          echo 'stage=wordpress-install result=PASS wordpress=6.7.2'
+          echo "stage=wordpress-install result=PASS wordpress=${{ matrix.wordpress }}"
 
       - name: Install and activate production plugin snapshot
         shell: bash
@@ -214,4 +221,4 @@ jobs:
         env:
           VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
         run: |
-          echo "validation_id=$VALIDATION_ID gate=production-save-as wordpress=6.7.2 result=PASS"
+          echo "validation_id=$VALIDATION_ID gate=production-save-as wordpress=${{ matrix.wordpress }} result=PASS"
