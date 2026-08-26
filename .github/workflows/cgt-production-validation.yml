@@ -1,0 +1,212 @@
+name: CGT Production Candidate Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cgt-production-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cgt-production-candidate
+  cancel-in-progress: true
+
+jobs:
+  production:
+    name: WordPress 6.7.2 / PHP 8.0 / Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: wordpress
+          MYSQL_USER: wordpress
+          MYSQL_PASSWORD: wordpress
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout isolated validation snapshot
+        uses: actions/checkout@v5
+        with:
+          repository: first-knight-of-cydonia/validation-input
+          ref: snapshot-current
+          token: ${{ secrets.VALIDATION_INPUT_TOKEN }}
+          path: input
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify snapshot boundary
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
+          validation_id="$(jq -er '.validation_id' "$manifest")"
+          [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
+          [[ "$validation_id" =~ ^[0-9a-f-]{36}$ ]]
+          test -f "$GITHUB_WORKSPACE/input/composer.json"
+          test -f "$GITHUB_WORKSPACE/input/tests/e2e/save-template-production.js"
+          printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
+          rm -rf "$GITHUB_WORKSPACE/input/.git"
+          echo "stage=snapshot result=PASS validation_id=$validation_id"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          extensions: mysqli, ctype
+          tools: wp-cli
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Chromium runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          npm init -y >"$RUNNER_TEMP/npm-init.log" 2>&1
+          npm install playwright@1.55.0 >"$RUNNER_TEMP/npm-install.log" 2>&1
+          npx playwright install --with-deps chromium >"$RUNNER_TEMP/playwright-install.log" 2>&1
+          echo 'stage=chromium result=PASS'
+
+      - name: Install production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/input"
+          if ! composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader >"$RUNNER_TEMP/composer.log" 2>&1; then
+            echo 'stage=composer result=FAIL'
+            exit 1
+          fi
+          echo 'stage=composer result=PASS'
+
+      - name: Run accumulated production gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/input"
+          if ! php scripts/test/run.php full >"$RUNNER_TEMP/production-gate.log" 2>&1; then
+            summary="$(tail -n 1 "$RUNNER_TEMP/production-gate.log" | tr -d '\r' | sed -E 's#log=[^ ]+#log=private#')"
+            echo "stage=production-gate result=FAIL ${summary}"
+            exit 1
+          fi
+          summary="$(tail -n 1 "$RUNNER_TEMP/production-gate.log" | tr -d '\r')"
+          echo "stage=production-gate result=PASS ${summary}"
+
+      - name: Install WordPress 6.7.2 fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          mkdir -p "$wp_path"
+          {
+            wp core download --version='6.7.2' --path="$wp_path" --force
+            wp config create --path="$wp_path" --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=127.0.0.1:3306 --skip-check
+            wp core install --path="$wp_path" --url='http://127.0.0.1:8080' --title='Validation Fixture' --admin_user=admin --admin_password=admin --admin_email='admin@example.test' --skip-email
+            wp config set WP_DEBUG true --raw --path="$wp_path"
+            wp config set WP_DEBUG_LOG true --raw --path="$wp_path"
+            wp config set WP_DEBUG_DISPLAY false --raw --path="$wp_path"
+          } >"$RUNNER_TEMP/wp-install.log" 2>&1
+          echo 'stage=wordpress-install result=PASS wordpress=6.7.2'
+
+      - name: Install and activate production plugin snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_dir="$RUNNER_TEMP/wordpress/wp-content/plugins/croco-gutenberg-templates"
+          rm -rf "$plugin_dir"
+          mkdir -p "$plugin_dir"
+          rsync -a --exclude='.validation/' --exclude='.test-results/' "$GITHUB_WORKSPACE/input/" "$plugin_dir/"
+          if ! wp plugin activate croco-gutenberg-templates --path="$RUNNER_TEMP/wordpress" >"$RUNNER_TEMP/plugin-activate.log" 2>&1; then
+            echo 'stage=plugin-activate result=FAIL'
+            exit 1
+          fi
+          echo 'stage=plugin-activate result=PASS'
+
+      - name: Start WordPress server
+        shell: bash
+        run: |
+          set -euo pipefail
+          php -S 127.0.0.1:8080 -t "$RUNNER_TEMP/wordpress" >"$RUNNER_TEMP/php-server.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/php-server.pid"
+          for attempt in $(seq 1 20); do
+            if curl -fsS -o /dev/null 'http://127.0.0.1:8080/wp-login.php'; then
+              echo 'stage=server result=PASS'
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'stage=server result=FAIL'
+          exit 1
+
+      - name: Run production Save-as browser E2E
+        shell: bash
+        env:
+          CGT_SAVE_TEMPLATE_BASE_URL: http://127.0.0.1:8080
+          NODE_PATH: ${{ runner.temp }}/node_modules
+        run: |
+          set -euo pipefail
+          if ! node "$GITHUB_WORKSPACE/input/tests/e2e/save-template-production.js" >"$RUNNER_TEMP/save-template-e2e.log" 2>&1; then
+            reason='ASSERTION'
+            if grep -Eq 'Timeout(Error)?|Timeout [0-9]+ms exceeded|waiting for' "$RUNNER_TEMP/save-template-e2e.log"; then reason='TIMEOUT'; fi
+            if grep -Eq 'ECONNREFUSED|ERR_CONNECTION|net::ERR' "$RUNNER_TEMP/save-template-e2e.log"; then reason='TRANSPORT'; fi
+            echo "stage=save-template-e2e result=FAIL reason=$reason"
+            exit 1
+          fi
+          pass_count="$(grep -c '^PASS:' "$RUNNER_TEMP/save-template-e2e.log" || true)"
+          echo "stage=save-template-e2e result=PASS pass_count=$pass_count"
+
+      - name: Verify server-owned template identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          wp_path="$RUNNER_TEMP/wordpress"
+          ids="$(wp post list --post_type=cgt_template --post_status=any --field=ID --path="$wp_path")"
+          count=0
+          while read -r id; do
+            [ -n "$id" ] || continue
+            uid="$(wp post meta get "$id" _cgt_template_uid --path="$wp_path" 2>/dev/null || true)"
+            if [[ ! "$uid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
+              echo 'stage=identity result=FAIL reason=MISSING_OR_INVALID_UID'
+              exit 1
+            fi
+            count=$((count + 1))
+          done <<< "$ids"
+          if [ "$count" -lt 1 ]; then
+            echo 'stage=identity result=FAIL reason=NO_CREATED_TEMPLATES'
+            exit 1
+          fi
+          echo "stage=identity result=PASS templates=$count"
+
+      - name: Stop WordPress server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/php-server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/php-server.pid")" 2>/dev/null || true
+          fi
+
+      - name: Final validation marker
+        if: success()
+        shell: bash
+        env:
+          VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
+        run: |
+          echo "validation_id=$VALIDATION_ID gate=production-save-as wordpress=6.7.2 result=PASS"
