@@ -86,12 +86,12 @@ jobs:
           npx playwright install --with-deps chromium >"$RUNNER_TEMP/playwright-install.log" 2>&1
           echo 'stage=chromium result=PASS'
 
-      - name: Install production dependencies
+      - name: Install validation dependencies
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/input"
-          if ! composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader >"$RUNNER_TEMP/composer.log" 2>&1; then
+          if ! composer install --no-interaction --prefer-dist --no-progress --optimize-autoloader >"$RUNNER_TEMP/composer.log" 2>&1; then
             echo 'stage=composer result=FAIL'
             exit 1
           fi
@@ -134,6 +134,11 @@ jobs:
           rm -rf "$plugin_dir"
           mkdir -p "$plugin_dir"
           rsync -a --exclude='.validation/' --exclude='.test-results/' "$GITHUB_WORKSPACE/input/" "$plugin_dir/"
+          cd "$plugin_dir"
+          if ! composer install --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader >"$RUNNER_TEMP/plugin-composer.log" 2>&1; then
+            echo 'stage=plugin-composer result=FAIL'
+            exit 1
+          fi
           if ! wp plugin activate croco-gutenberg-templates --path="$RUNNER_TEMP/wordpress" >"$RUNNER_TEMP/plugin-activate.log" 2>&1; then
             echo 'stage=plugin-activate result=FAIL'
             exit 1
