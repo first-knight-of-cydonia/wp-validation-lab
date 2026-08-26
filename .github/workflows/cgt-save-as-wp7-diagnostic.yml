@@ -119,6 +119,45 @@ jobs:
           done
           exit 1
 
+      - name: Inspect WP 7.0.3 editor toolbar accessibility
+        shell: bash
+        env:
+          NODE_PATH: ${{ runner.temp }}/node_modules
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+            await page.goto('http://127.0.0.1:8080/wp-login.php');
+            await page.locator('#user_login').fill('admin');
+            await page.locator('#user_pass').fill('admin');
+            await Promise.all([page.waitForNavigation(), page.locator('#wp-submit').click()]);
+            await page.goto('http://127.0.0.1:8080/wp-admin/post-new.php');
+            await page.waitForFunction(() => window.wp && window.wp.data && window.wp.plugins);
+            await page.waitForTimeout(700);
+            const welcome = page.getByRole('dialog', { name: 'Welcome to the block editor' });
+            if (await welcome.isVisible().catch(() => false)) {
+              await welcome.getByRole('button', { name: 'Close' }).click();
+              await welcome.waitFor({ state: 'hidden' });
+            }
+            const buttons = await page.locator('button:visible').evaluateAll((nodes) => nodes.map((button) => ({
+              text: (button.innerText || button.textContent || '').trim().replace(/\s+/g, ' '),
+              ariaLabel: button.getAttribute('aria-label'),
+              title: button.getAttribute('title'),
+              ariaExpanded: button.getAttribute('aria-expanded'),
+              ariaHaspopup: button.getAttribute('aria-haspopup'),
+              className: button.className,
+            })).filter((item) => item.ariaLabel || item.title || item.text));
+            console.log('CGT_WP7_VISIBLE_BUTTONS=' + JSON.stringify(buttons));
+            await browser.close();
+          })().catch((error) => {
+            console.error('CGT_WP7_INSPECT_FAIL=' + (error.message || String(error)));
+            process.exit(1);
+          });
+          NODE
+
       - name: Run Save-as E2E and expose sanitized checkpoints
         shell: bash
         env:
