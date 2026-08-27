@@ -1,4 +1,4 @@
-# Validation trigger: 372eeec5-f64f-417a-9d04-895e65d80350
+# Validation trigger: c5baf9f0-1fac-498a-9277-b9fb605c392b
 name: CGT Persistent Schema Runtime
 
 on:
@@ -105,6 +105,14 @@ jobs:
         run: |
           set -euo pipefail
           wp eval "require '$GITHUB_WORKSPACE/input/tests/runtime/persistent-schema-production.php';" --path="$RUNNER_TEMP/wordpress" 2>&1 | tee "$RUNNER_TEMP/persistent-schema-production.log"
+
+      - name: Verify current-schema normal request is read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          WP_PATH="$RUNNER_TEMP/wordpress"
+          wp eval 'update_option("cgt_schema_version", 1, false); delete_option("cgt_site_uid");' --path="$WP_PATH"
+          wp eval 'if ( false !== get_option("cgt_site_uid", false) ) { WP_CLI::error("Current-schema normal request mutated persistent identity."); } WP_CLI::line("PASS persistent-schema-normal-request checks=1");' --path="$WP_PATH" 2>&1 | tee -a "$RUNNER_TEMP/persistent-schema-production.log"
 
       - name: Convert to Multisite and network-activate production plugin
         shell: bash
