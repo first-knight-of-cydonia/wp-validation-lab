@@ -1,4 +1,4 @@
-# Validation trigger: 1c495f19-2c6f-4d00-bc28-def580929122
+# Validation trigger: 5b6fb39d-a0d0-412f-b418-5adf4556bfa2
 name: CGT Global Template Frontend Runtime
 
 on:
@@ -58,7 +58,7 @@ jobs:
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
           [[ "$validation_id" =~ ^[0-9a-f-]{36}$ ]]
-          test "$validation_id" = '1c495f19-2c6f-4d00-bc28-def580929122'
+          test "$validation_id" = '5b6fb39d-a0d0-412f-b418-5adf4556bfa2'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/tests/runtime/global-template-frontend-production.php"
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
