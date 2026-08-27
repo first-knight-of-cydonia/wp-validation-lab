@@ -1,4 +1,4 @@
-# Validation trigger: b3c68983-78a6-424a-8f6a-f02217e1172b
+# Validation trigger: 5d0b44ac-2996-4b9f-8c65-e35e01f4533f
 name: CGT Persistent Schema Runtime
 
 on:
@@ -113,6 +113,7 @@ jobs:
           WP_PATH="$RUNNER_TEMP/wordpress"
           wp eval 'update_option("cgt_schema_version", 1, false); delete_option("cgt_site_uid");' --path="$WP_PATH"
           wp eval 'if ( false !== get_option("cgt_site_uid", false) ) { WP_CLI::error("Current-schema normal request mutated persistent identity."); } WP_CLI::line("PASS persistent-schema-normal-request checks=1");' --path="$WP_PATH" 2>&1 | tee -a "$RUNNER_TEMP/persistent-schema-production.log"
+          wp eval 'delete_option("cgt_schema_version"); delete_option("cgt_site_uid");' --path="$WP_PATH"
 
       - name: Convert to Multisite and network-activate production plugin
         shell: bash
