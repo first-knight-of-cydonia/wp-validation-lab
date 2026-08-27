@@ -103,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          wp eval-file "$GITHUB_WORKSPACE/input/tests/runtime/persistent-schema-production.php" --path="$RUNNER_TEMP/wordpress" 2>&1 | tee "$RUNNER_TEMP/persistent-schema-production.log"
+          wp eval "require '$GITHUB_WORKSPACE/input/tests/runtime/persistent-schema-production.php';" --path="$RUNNER_TEMP/wordpress" 2>&1 | tee "$RUNNER_TEMP/persistent-schema-production.log"
 
       - name: Convert to Multisite and network-activate production plugin
         shell: bash
@@ -115,7 +115,7 @@ jobs:
           wp site create --path="$WP_PATH" --slug=site2 --title='Site 2' --email='admin@example.test'
           wp plugin activate croco-gutenberg-templates --network --path="$WP_PATH"
           wp site create --path="$WP_PATH" --slug=site3 --title='Site 3' --email='admin@example.test'
-          wp eval-file "$GITHUB_WORKSPACE/input/tests/runtime/persistent-schema-production-multisite.php" --path="$WP_PATH" 2>&1 | tee -a "$RUNNER_TEMP/persistent-schema-production.log"
+          wp eval "require '$GITHUB_WORKSPACE/input/tests/runtime/persistent-schema-production-multisite.php';" --path="$WP_PATH" 2>&1 | tee -a "$RUNNER_TEMP/persistent-schema-production.log"
 
       - name: Final validation marker
         if: success()
