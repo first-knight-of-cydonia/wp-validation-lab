@@ -1,4 +1,4 @@
-# Validation trigger: 7b46e790-2ac9-4ce2-b4b0-e2a2f912cb47
+# Validation trigger: eb7ecaf2-804f-4a8e-8341-cdc2c934263a
 name: CGT Restricted Relationship Mutation Production Runtime
 
 on:
@@ -57,7 +57,7 @@ jobs:
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
-          test "$validation_id" = '7b46e790-2ac9-4ce2-b4b0-e2a2f912cb47'
+          test "$validation_id" = 'eb7ecaf2-804f-4a8e-8341-cdc2c934263a'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/tests/runtime/restricted-relationship-mutation-production.php"
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
@@ -105,7 +105,7 @@ jobs:
           set -euo pipefail
           export CGT_RUNTIME_WP_PATH="$RUNNER_TEMP/wordpress"
           wp eval "require '$GITHUB_WORKSPACE/input/tests/runtime/restricted-relationship-mutation-production.php';" --path="$RUNNER_TEMP/wordpress" 2>&1 | tee "$RUNNER_TEMP/restricted-relationship-mutation-production.log"
-          grep -Eq '^PASS restricted-relationship-mutation-production checks=[0-9]+$' "$RUNNER_TEMP/restricted-relationship-mutation-production.log"
+          grep -Eq '^PASS restricted-relationship-mutation-production checks=[1-9][0-9]*$' "$RUNNER_TEMP/restricted-relationship-mutation-production.log"
 
       - name: Reject PHP warnings and notices
         if: always()
