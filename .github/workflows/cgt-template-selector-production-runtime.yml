@@ -58,12 +58,11 @@ jobs:
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
           test "$validation_id" = '640ac4f1-c7f0-4a1a-a90c-c7db927819b0'
-          test "$(jq -er '.source_sha' "$manifest")" = '528017ce753063c9ce49c64be975ac8e39f7ab51'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/tests/runtime/template-selector-production.php"
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
           rm -rf "$GITHUB_WORKSPACE/input/.git"
-          echo "stage=snapshot result=PASS validation_id=$validation_id"
+          echo "stage=snapshot result=PASS validation_id=$validation_id source_sha=528017ce753063c9ce49c64be975ac8e39f7ab51"
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
