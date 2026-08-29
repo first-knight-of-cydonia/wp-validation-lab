@@ -1,4 +1,4 @@
-# Validation trigger: 1d6f6197-2407-40f6-8e13-2b68d9d0d725
+# Validation trigger: 2eaac59f-5082-475e-8fc9-fb1ea5245973
 name: CGT Template Preview Production Runtime
 
 on:
@@ -57,7 +57,7 @@ jobs:
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
-          test "$validation_id" = '1d6f6197-2407-40f6-8e13-2b68d9d0d725'
+          test "$validation_id" = '2eaac59f-5082-475e-8fc9-fb1ea5245973'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/tests/runtime/template-preview-production.php"
           printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
