@@ -1,4 +1,4 @@
-# Validation trigger: 56c86c72-ee50-4319-b67d-4f24e76e50df
+# Validation trigger: 80f4feaa-6a92-44fa-b030-92e026b1f496
 name: CGT Focus Refetch Production Browser
 
 on:
@@ -61,7 +61,7 @@ jobs:
           manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
-          test "$validation_id" = '56c86c72-ee50-4319-b67d-4f24e76e50df'
+          test "$validation_id" = '80f4feaa-6a92-44fa-b030-92e026b1f496'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/blocks/global-template/editor-refresh-coordinator.js"
           test -f "$GITHUB_WORKSPACE/input/tests/e2e/focus-refetch-production.js"
