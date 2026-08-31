@@ -1,0 +1,178 @@
+# Validation trigger: 7d4b0b55-35d0-47f7-a4b0-8f571a5a7522
+name: CGT Phase 5D RTL Bidi Browser
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/cgt-phase-5d-rtl-bidi-browser.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cgt-phase-5d-rtl-bidi-browser
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    name: WordPress ${{ matrix.wordpress }} / PHP 8.0 / Chromium
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        wordpress: [ '6.7.2', '7.0.3' ]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: wordpress
+          MYSQL_USER: wordpress
+          MYSQL_PASSWORD: wordpress
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - name: Checkout isolated validation snapshot
+        uses: actions/checkout@v5
+        with:
+          repository: first-knight-of-cydonia/validation-input
+          ref: snapshot-current
+          token: ${{ secrets.VALIDATION_INPUT_TOKEN }}
+          path: input
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify snapshot boundary
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="$GITHUB_WORKSPACE/input/.validation/manifest.json"
+          validation_id="$(jq -er '.validation_id' "$manifest")"
+          [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
+          test "$validation_id" = '7d4b0b55-35d0-47f7-a4b0-8f571a5a7522'
+          test "$(jq -er '.source_sha' "$manifest")" = '2ca5dade96244ad1f965f09f4b530c06029b8889'
+          test -f "$GITHUB_WORKSPACE/input/composer.json"
+          test -f "$GITHUB_WORKSPACE/input/blocks/global-template/editor.js"
+          test -f "$GITHUB_WORKSPACE/input/tests/e2e/rtl-bidi-editor-production.js"
+          test -f "$GITHUB_WORKSPACE/input/tests/e2e/accessibility-keyboard-editor-production.js"
+          printf 'validation_id=%s\n' "$validation_id" >> "$GITHUB_OUTPUT"
+          rm -rf "$GITHUB_WORKSPACE/input/.git"
+          echo "stage=snapshot result=PASS validation_id=$validation_id"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          extensions: mysqli
+          tools: wp-cli, composer:v2
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.55.0 >/dev/null
+          npx playwright install --with-deps chromium
+
+      - name: Install WordPress ${{ matrix.wordpress }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          WP_PATH="$RUNNER_TEMP/wordpress"
+          mkdir -p "$WP_PATH"
+          wp core download --version='${{ matrix.wordpress }}' --path="$WP_PATH" --force
+          wp config create --path="$WP_PATH" --dbname=wordpress --dbuser=wordpress --dbpass=wordpress --dbhost=127.0.0.1:3306 --skip-check
+          wp core install --path="$WP_PATH" --url='http://127.0.0.1:8080' --title='CGT Phase 5D RTL Bidi Browser' --admin_user=admin --admin_password=admin --admin_email='admin@example.test' --skip-email
+          wp config set WP_DEBUG true --raw --path="$WP_PATH"
+          wp config set WP_DEBUG_LOG true --raw --path="$WP_PATH"
+          wp config set WP_DEBUG_DISPLAY false --raw --path="$WP_PATH"
+          echo "stage=wordpress-install result=PASS wordpress=${{ matrix.wordpress }}"
+
+      - name: Install and activate production plugin snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          WP_PATH="$RUNNER_TEMP/wordpress"
+          PLUGIN_PATH="$WP_PATH/wp-content/plugins/croco-gutenberg-templates"
+          rm -rf "$PLUGIN_PATH"
+          mkdir -p "$PLUGIN_PATH"
+          rsync -a --exclude='.validation/' --exclude='.test-results/' "$GITHUB_WORKSPACE/input/" "$PLUGIN_PATH/"
+          composer install --working-dir="$PLUGIN_PATH" --no-dev --no-interaction --prefer-dist --no-progress --optimize-autoloader
+          wp plugin activate croco-gutenberg-templates --path="$WP_PATH"
+          node --check "$PLUGIN_PATH/blocks/global-template/editor-contracts.js"
+          node --check "$PLUGIN_PATH/blocks/global-template/editor-refresh-coordinator.js"
+          node --check "$PLUGIN_PATH/blocks/global-template/editor.js"
+          node --check "$PLUGIN_PATH/tests/e2e/rtl-bidi-editor-production.js"
+          node --check "$PLUGIN_PATH/tests/e2e/accessibility-keyboard-editor-production.js"
+          echo 'stage=plugin-activate result=PASS'
+
+      - name: Run Phase 5D RTL Bidi and accessibility Chromium assertions
+        shell: bash
+        env:
+          CGT_RTL_BIDI_EDITOR_BASE_URL: http://127.0.0.1:8080
+          CGT_ACCESSIBILITY_KEYBOARD_EDITOR_BASE_URL: http://127.0.0.1:8080
+          CGT_FOCUS_BASE_URL: http://127.0.0.1:8080
+          NODE_PATH: ${{ runner.temp }}/node_modules
+        run: |
+          set -euo pipefail
+          WP_PATH="$RUNNER_TEMP/wordpress"
+          php -S 127.0.0.1:8080 -t "$WP_PATH" >"$RUNNER_TEMP/phase-5d-server.log" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 2
+          curl --retry 3 --retry-connrefused --retry-delay 1 -fsS -o /dev/null 'http://127.0.0.1:8080/'
+          node "$GITHUB_WORKSPACE/input/tests/e2e/rtl-bidi-editor-production.js" 2>&1 | tee "$RUNNER_TEMP/rtl-bidi-editor-production.log"
+          grep -Fx 'RTL_BIDI_EDITOR_PRODUCTION: PASS' "$RUNNER_TEMP/rtl-bidi-editor-production.log"
+          node "$GITHUB_WORKSPACE/input/tests/e2e/accessibility-keyboard-editor-production.js" 2>&1 | tee "$RUNNER_TEMP/accessibility-keyboard-editor-production.log"
+          grep -Fx 'ACCESSIBILITY_KEYBOARD_EDITOR_PRODUCTION: PASS' "$RUNNER_TEMP/accessibility-keyboard-editor-production.log"
+
+      - name: Reject PHP warnings and notices
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEBUG_LOG="$RUNNER_TEMP/wordpress/wp-content/debug.log"
+          if [[ -f "$DEBUG_LOG" ]] && grep -E 'PHP (Warning|Notice)' "$DEBUG_LOG"; then
+            exit 1
+          fi
+          echo 'stage=php-warning-notice-gate result=PASS'
+
+      - name: Final validation marker
+        if: success()
+        shell: bash
+        env:
+          VALIDATION_ID: ${{ steps.snapshot.outputs.validation_id }}
+        run: |
+          echo "validation_id=$VALIDATION_ID gate=phase-5d-rtl-bidi-browser wordpress=${{ matrix.wordpress }} php=8.0 chromium=result-pass result=PASS"
+
+      - name: Dump failure evidence
+        if: failure()
+        shell: bash
+        run: |
+          echo '--- RTL Bidi E2E ---'
+          tail -n 80 "$RUNNER_TEMP/rtl-bidi-editor-production.log" 2>/dev/null || true
+          echo '--- Accessibility E2E ---'
+          tail -n 80 "$RUNNER_TEMP/accessibility-keyboard-editor-production.log" 2>/dev/null || true
+          echo '--- PHP server ---'
+          tail -n 80 "$RUNNER_TEMP/phase-5d-server.log" 2>/dev/null || true
+          echo '--- WordPress debug ---'
+          tail -n 80 "$RUNNER_TEMP/wordpress/wp-content/debug.log" 2>/dev/null || true
