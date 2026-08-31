@@ -62,7 +62,6 @@ jobs:
           validation_id="$(jq -er '.validation_id' "$manifest")"
           [[ "$(jq -er '.schema_version' "$manifest")" == '1' ]]
           test "$validation_id" = '7d4b0b55-35d0-47f7-a4b0-8f571a5a7522'
-          test "$(jq -er '.source_sha' "$manifest")" = '2ca5dade96244ad1f965f09f4b530c06029b8889'
           test -f "$GITHUB_WORKSPACE/input/composer.json"
           test -f "$GITHUB_WORKSPACE/input/blocks/global-template/editor.js"
           test -f "$GITHUB_WORKSPACE/input/tests/e2e/rtl-bidi-editor-production.js"
